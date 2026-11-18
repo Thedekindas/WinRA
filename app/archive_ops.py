@@ -8,35 +8,57 @@ import tempfile
 from pathlib import Path
 
 
-def extract_zip(src: str, dest: str, progress_cb=None) -> list[str]:
-    """Extract a ZIP file to destination folder. Returns list of extracted files."""
+class PasswordRequiredError(Exception):
+    """Raised when an archive requires a password or an invalid password was provided."""
+    pass
+
+
+def extract_zip(src: str, dest: str, password: str | None = None, progress_cb=None) -> list[str]:
+    """Extract a ZIP file to destination folder. Supports password-protected archives."""
     extracted = []
+    pwd_bytes = password.encode('utf-8') if password else None
+
     with zipfile.ZipFile(src, 'r') as zf:
         members = zf.namelist()
         total = len(members)
         for i, member in enumerate(members):
-            zf.extract(member, dest)
+            try:
+                zf.extract(member, dest, pwd=pwd_bytes)
+            except RuntimeError as e:
+                err = str(e).lower()
+                if "password" in err or "encrypted" in err:
+                    raise PasswordRequiredError("El archivo ZIP está protegido con contraseña o la clave es incorrecta.")
+                raise
+            except zipfile.BadZipFile as e:
+                err = str(e).lower()
+                if "password" in err or "crc" in err:
+                    raise PasswordRequiredError("Contraseña de ZIP incorrecta o archivo dañado.")
+                raise
             extracted.append(member)
             if progress_cb:
                 progress_cb(i + 1, total, member)
     return extracted
 
 
-def extract_rar(src: str, dest: str, progress_cb=None) -> list[str]:
-    """Extract a RAR file using unar command. Returns list of extracted files."""
+def extract_rar(src: str, dest: str, password: str | None = None, progress_cb=None) -> list[str]:
+    """Extract a RAR file using unar command. Supports password-protected archives."""
     unar_path = _find_tool("unar")
     if not unar_path:
         raise FileNotFoundError(
-            "unar tidak ditemukan. Install dengan: brew install unar"
+            "No se encontró la herramienta 'unar'. Verifica que esté instalada o incluida en el paquete."
         )
 
     # List files first for progress tracking
     lsar_path = _find_tool("lsar")
     file_list = []
     if lsar_path:
+        lsar_cmd = [lsar_path, "-j"]
+        if password:
+            lsar_cmd.extend(["-p", password])
+        lsar_cmd.append(src)
         result = subprocess.run(
-            [lsar_path, "-j", src],
-            capture_output=True, text=True
+            lsar_cmd,
+            capture_output=True, text=True, stdin=subprocess.DEVNULL
         )
         if result.returncode == 0:
             import json
@@ -48,9 +70,13 @@ def extract_rar(src: str, dest: str, progress_cb=None) -> list[str]:
                 ]
             except (json.JSONDecodeError, KeyError):
                 pass
+        else:
+            out_lower = (result.stderr + " " + result.stdout).lower()
+            if any(w in out_lower for w in ["password", "encrypted", "passphrase", "clave", "contrase"]):
+                raise PasswordRequiredError("El archivo RAR está protegido con contraseña o la clave es incorrecta.")
 
     if progress_cb and file_list:
-        progress_cb(0, len(file_list), "Memulai ekstraksi...")
+        progress_cb(0, len(file_list), "Iniciando extracción...")
 
     # Snapshot existing files BEFORE extraction to avoid counting pre-existing files
     existing_files = set()
@@ -59,13 +85,24 @@ def extract_rar(src: str, dest: str, progress_cb=None) -> list[str]:
             for f in files:
                 existing_files.add(os.path.relpath(os.path.join(root, f), dest))
 
+    cmd = [unar_path, "-o", dest, "-f"]
+    if password:
+        cmd.extend(["-p", password])
+    cmd.append(src)
+
     result = subprocess.run(
-        [unar_path, "-o", dest, "-f", src],
-        capture_output=True, text=True
+        cmd,
+        capture_output=True, text=True, stdin=subprocess.DEVNULL
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"Gagal ekstrak RAR: {result.stderr}")
+        err_text = (result.stderr + " " + result.stdout).strip()
+        err_lower = err_text.lower()
+        if any(w in err_lower for w in ["password", "encrypted", "passphrase", "decrypt", "clave", "contrase", "wrong", "incorrect"]):
+            raise PasswordRequiredError("El archivo RAR está protegido con contraseña o la clave ingresada es incorrecta.")
+        if not password:
+            raise PasswordRequiredError("El archivo RAR parece requerir contraseña para extraerse.")
+        raise RuntimeError(f"Error al extraer archivo RAR: {err_text}")
 
     # Collect only newly extracted files
     extracted = []
@@ -77,7 +114,7 @@ def extract_rar(src: str, dest: str, progress_cb=None) -> list[str]:
 
     if progress_cb:
         total = max(len(extracted), 1)
-        progress_cb(total, total, "Selesai!")
+        progress_cb(total, total, "¡Completado!")
 
     return extracted
 
@@ -112,16 +149,16 @@ def compress_to_zip(paths: list[str], output: str, progress_cb=None) -> str:
     return output
 
 
-def convert_rar_to_zip(rar_path: str, zip_output: str, progress_cb=None) -> str:
+def convert_rar_to_zip(rar_path: str, zip_output: str, password: str | None = None, progress_cb=None) -> str:
     """Convert RAR to ZIP by extracting and re-compressing."""
     with tempfile.TemporaryDirectory() as tmpdir:
         if progress_cb:
-            progress_cb(0, 100, "Mengekstrak RAR...")
+            progress_cb(0, 100, "Extrayendo RAR...")
 
-        extract_rar(rar_path, tmpdir)
+        extract_rar(rar_path, tmpdir, password=password)
 
         if progress_cb:
-            progress_cb(50, 100, "Mengompres ke ZIP...")
+            progress_cb(50, 100, "Comprimiendo a ZIP...")
 
         # Find the extracted content
         items = os.listdir(tmpdir)
@@ -150,23 +187,23 @@ def convert_rar_to_zip(rar_path: str, zip_output: str, progress_cb=None) -> str:
     return zip_output
 
 
-def convert_zip_to_rar(zip_path: str, rar_output: str, progress_cb=None) -> str:
+def convert_zip_to_rar(zip_path: str, rar_output: str, password: str | None = None, progress_cb=None) -> str:
     """Convert ZIP to RAR. Requires 'rar' command-line tool."""
     rar_tool = _find_tool("rar")
     if not rar_tool:
         raise FileNotFoundError(
-            "Tool 'rar' tidak ditemukan. Pembuatan file RAR memerlukan "
-            "WinRAR CLI. Sebagai alternatif, gunakan format ZIP."
+            "Herramienta 'rar' no encontrada. La creación de archivos RAR requiere "
+            "la utilidad oficial de WinRAR. Como alternativa, use el formato ZIP."
         )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         if progress_cb:
-            progress_cb(0, 100, "Mengekstrak ZIP...")
+            progress_cb(0, 100, "Extrayendo ZIP...")
 
-        extract_zip(zip_path, tmpdir)
+        extract_zip(zip_path, tmpdir, password=password)
 
         if progress_cb:
-            progress_cb(50, 100, "Mengompres ke RAR...")
+            progress_cb(50, 100, "Comprimiendo a RAR...")
 
         result = subprocess.run(
             [rar_tool, "a", "-r", rar_output] + os.listdir(tmpdir),
@@ -175,66 +212,87 @@ def convert_zip_to_rar(zip_path: str, rar_output: str, progress_cb=None) -> str:
         )
 
         if result.returncode != 0:
-            raise RuntimeError(f"Gagal membuat RAR: {result.stderr}")
+            raise RuntimeError(f"Error al crear RAR: {result.stderr}")
 
         if progress_cb:
-            progress_cb(100, 100, "Selesai!")
+            progress_cb(100, 100, "¡Completado!")
 
     return rar_output
 
 
-def get_archive_info(filepath: str) -> dict:
-    """Get information about an archive file."""
+def get_archive_info(filepath: str, password: str | None = None) -> dict:
+    """Get information about an archive file, including encryption status."""
     ext = Path(filepath).suffix.lower()
     info = {
         "path": filepath,
         "name": os.path.basename(filepath),
-        "size": os.path.getsize(filepath),
+        "size": os.path.getsize(filepath) if os.path.exists(filepath) else 0,
         "type": ext.lstrip("."),
         "files": [],
         "total_files": 0,
         "total_size": 0,
+        "is_encrypted": False,
+        "error": None,
     }
 
     if ext == ".zip":
         try:
             with zipfile.ZipFile(filepath, 'r') as zf:
                 for zi in zf.infolist():
+                    is_enc = bool(zi.flag_bits & 0x1)
+                    if is_enc:
+                        info["is_encrypted"] = True
                     info["files"].append({
                         "name": zi.filename,
                         "size": zi.file_size,
                         "compressed": zi.compress_size,
                         "is_dir": zi.is_dir(),
+                        "is_encrypted": is_enc,
                     })
                 info["total_files"] = len([f for f in info["files"] if not f["is_dir"]])
                 info["total_size"] = sum(f["size"] for f in info["files"])
         except zipfile.BadZipFile:
-            info["error"] = "File ZIP rusak atau tidak valid"
+            info["error"] = "Archivo ZIP dañado o no válido"
 
     elif ext == ".rar":
         lsar_path = _find_tool("lsar")
         if lsar_path:
+            lsar_cmd = [lsar_path, "-j"]
+            if password:
+                lsar_cmd.extend(["-p", password])
+            lsar_cmd.append(filepath)
             result = subprocess.run(
-                [lsar_path, "-j", filepath],
-                capture_output=True, text=True
+                lsar_cmd,
+                capture_output=True, text=True, stdin=subprocess.DEVNULL
             )
             if result.returncode == 0:
                 import json
                 try:
                     data = json.loads(result.stdout)
                     for entry in data.get("lsarContents", []):
+                        is_enc = bool(entry.get("XADIsEncrypted", False))
+                        if is_enc:
+                            info["is_encrypted"] = True
                         info["files"].append({
                             "name": entry.get("XADFileName", ""),
                             "size": entry.get("XADFileSize", 0),
                             "compressed": entry.get("XADCompressedSize", 0),
                             "is_dir": entry.get("XADIsDirectory", False),
+                            "is_encrypted": is_enc,
                         })
                     info["total_files"] = len([f for f in info["files"] if not f["is_dir"]])
                     info["total_size"] = sum(f["size"] for f in info["files"])
                 except (json.JSONDecodeError, KeyError):
-                    info["error"] = "Gagal membaca info RAR"
+                    info["error"] = "Error al leer información del archivo RAR"
+            else:
+                out_lower = (result.stderr + " " + result.stdout).lower()
+                if any(w in out_lower for w in ["password", "encrypted", "clave", "passphrase"]):
+                    info["is_encrypted"] = True
+                    info["error"] = "Archivo RAR protegido con contraseña"
+                else:
+                    info["error"] = "No se pudo leer el archivo RAR"
         else:
-            info["error"] = "unar/lsar tidak terinstall"
+            info["error"] = "Herramienta unar/lsar no encontrada"
 
     return info
 

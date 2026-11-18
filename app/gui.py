@@ -16,6 +16,7 @@ from app.archive_ops import (
     convert_zip_to_rar,
     get_archive_info,
     format_size,
+    PasswordRequiredError,
 )
 from app.utils import (
     is_supported_archive,
@@ -83,6 +84,145 @@ class MacColors:
         INPUT_BORDER = "#48484A"
         TAG_BG = "#3A3A3C"
         HIGHLIGHT = "#1C3A5E"
+
+
+class PasswordDialog(ctk.CTkToplevel):
+    """macOS-styled modal password prompt for protected archives."""
+
+    def __init__(self, parent, title="Password Required", message="This archive is password-protected.\nPlease enter the password to extract:"):
+        super().__init__(parent)
+        self.transient(parent)
+        self.title("WinRA")
+        self.geometry("440x240")
+        self.resizable(False, False)
+
+        self._result: str | None = None
+        self._show_pwd = False
+
+        C = parent.C
+        self.configure(fg_color=C.BG)
+
+        # Container card
+        frame = ctk.CTkFrame(self, fg_color=C.CARD_BG, corner_radius=12, border_width=1, border_color=C.CARD_BORDER)
+        frame.pack(fill="both", expand=True, padx=16, pady=16)
+
+        # Header icon + title
+        hdr = ctk.CTkFrame(frame, fg_color="transparent")
+        hdr.pack(fill="x", padx=16, pady=(16, 8))
+
+        ctk.CTkLabel(
+            hdr, text="\U0001F512",
+            font=ctk.CTkFont(size=20),
+        ).pack(side="left", padx=(0, 8))
+
+        ctk.CTkLabel(
+            hdr, text=title,
+            font=ctk.CTkFont(family="SF Pro Display", size=15, weight="bold"),
+            text_color=C.TEXT_PRIMARY,
+        ).pack(side="left")
+
+        # Message
+        ctk.CTkLabel(
+            frame, text=message,
+            font=ctk.CTkFont(family="SF Pro Text", size=12),
+            text_color=C.TEXT_SECONDARY,
+            justify="left",
+            wraplength=380,
+        ).pack(anchor="w", padx=16, pady=(0, 12))
+
+        # Entry + Show toggle
+        entry_frame = ctk.CTkFrame(frame, fg_color="transparent")
+        entry_frame.pack(fill="x", padx=16, pady=(0, 16))
+
+        self._entry = ctk.CTkEntry(
+            entry_frame,
+            font=ctk.CTkFont(family="SF Pro Text", size=13),
+            height=34,
+            show="*",
+            placeholder_text="Enter archive password...",
+            fg_color=C.INPUT_BG,
+            border_color=C.INPUT_BORDER,
+            text_color=C.TEXT_PRIMARY,
+        )
+        self._entry.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._entry.focus_set()
+
+        self._toggle_btn = ctk.CTkButton(
+            entry_frame,
+            text="\U0001F441",
+            width=36,
+            height=34,
+            font=ctk.CTkFont(size=14),
+            fg_color=C.TAG_BG,
+            hover_color=C.SIDEBAR_HOVER,
+            text_color=C.TEXT_PRIMARY,
+            command=self._toggle_show,
+        )
+        self._toggle_btn.pack(side="right")
+
+        # Buttons
+        btn_box = ctk.CTkFrame(frame, fg_color="transparent")
+        btn_box.pack(fill="x", padx=16, pady=(0, 12))
+
+        cancel_btn = ctk.CTkButton(
+            btn_box,
+            text="Cancel",
+            width=90,
+            height=32,
+            font=ctk.CTkFont(family="SF Pro Text", size=12),
+            fg_color="transparent",
+            border_width=1,
+            border_color=C.SEPARATOR,
+            hover_color=C.SIDEBAR_HOVER,
+            text_color=C.TEXT_PRIMARY,
+            command=self._on_cancel,
+        )
+        cancel_btn.pack(side="right", padx=(8, 0))
+
+        ok_btn = ctk.CTkButton(
+            btn_box,
+            text="Extract",
+            width=100,
+            height=32,
+            font=ctk.CTkFont(family="SF Pro Text", size=12, weight="bold"),
+            fg_color=MacColors.BLUE,
+            hover_color=MacColors.BLUE_HOVER,
+            text_color="#FFFFFF",
+            command=self._on_submit,
+        )
+        ok_btn.pack(side="right")
+
+        self._entry.bind("<Return>", lambda e: self._on_submit())
+        self.bind("<Escape>", lambda e: self._on_cancel())
+
+        # Center on parent window
+        self.update_idletasks()
+        try:
+            px = parent.winfo_x() + (parent.winfo_width() // 2) - 220
+            py = parent.winfo_y() + (parent.winfo_height() // 2) - 120
+            self.geometry(f"+{max(0, px)}+{max(0, py)}")
+        except Exception:
+            pass
+
+        self.grab_set()
+        self.wait_window()
+
+    def _toggle_show(self):
+        self._show_pwd = not self._show_pwd
+        self._entry.configure(show="" if self._show_pwd else "*")
+
+    def _on_submit(self):
+        val = self._entry.get()
+        if val:
+            self._result = val
+        self.destroy()
+
+    def _on_cancel(self):
+        self._result = None
+        self.destroy()
+
+    def get_password(self) -> str | None:
+        return self._result
 
 
 class WinRAApp(ctk.CTk):
@@ -327,7 +467,7 @@ class WinRAApp(ctk.CTk):
         content = self._content
         content.grid(row=2, column=0, sticky="nsew", padx=20, pady=16)
         content.grid_columnconfigure(0, weight=1)
-        content.grid_rowconfigure(1, weight=1)
+        content.grid_rowconfigure(3, weight=1)
 
         # ── Drop Zone / Action Card ──
         self._top_card = ctk.CTkFrame(
@@ -441,7 +581,7 @@ class WinRAApp(ctk.CTk):
             border_color=self.C.CARD_BORDER,
         )
         output_bar = self._output_bar
-        output_bar.grid(row=1, column=0, sticky="new", pady=(0, 10))
+        output_bar.grid(row=1, column=0, sticky="new", pady=(0, 6))
         output_bar.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(
@@ -474,6 +614,50 @@ class WinRAApp(ctk.CTk):
         )
         self._output_finder_btn.grid(row=0, column=2, padx=(4, 8), pady=6)
 
+        # ── Password bar (optional for encrypted archives) ──
+        self._password_bar = ctk.CTkFrame(
+            content, height=38,
+            fg_color=self.C.CARD_BG,
+            corner_radius=10,
+            border_width=1,
+            border_color=self.C.CARD_BORDER,
+        )
+        password_bar = self._password_bar
+        password_bar.grid(row=2, column=0, sticky="new", pady=(0, 10))
+        password_bar.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            password_bar, text="Password:",
+            font=ctk.CTkFont(family="SF Pro Text", size=11, weight="bold"),
+            text_color=self.C.TEXT_SECONDARY,
+        ).grid(row=0, column=0, padx=(12, 6), pady=6)
+
+        self._password_entry = ctk.CTkEntry(
+            password_bar,
+            font=ctk.CTkFont(family="SF Pro Text", size=11),
+            height=26,
+            show="*",
+            fg_color="transparent",
+            border_width=0,
+            text_color=self.C.TEXT_PRIMARY,
+            placeholder_text="Enter password (if archive is password-protected)...",
+            placeholder_text_color=self.C.TEXT_TERTIARY,
+        )
+        self._password_entry.grid(row=0, column=1, sticky="ew", padx=4, pady=6)
+
+        self._show_pwd_inline = False
+        self._password_toggle_btn = ctk.CTkButton(
+            password_bar, text="\U0001F441",
+            width=32, height=24,
+            font=ctk.CTkFont(size=11),
+            fg_color=self.C.TAG_BG,
+            hover_color=self.C.SIDEBAR_HOVER,
+            text_color=self.C.TEXT_SECONDARY,
+            corner_radius=6,
+            command=self._toggle_inline_password,
+        )
+        self._password_toggle_btn.grid(row=0, column=2, padx=(4, 8), pady=6)
+
         # ── Treeview / File list card ──
         self._tree_card = ctk.CTkFrame(
             content,
@@ -483,7 +667,7 @@ class WinRAApp(ctk.CTk):
             border_color=self.C.CARD_BORDER,
         )
         tree_card = self._tree_card
-        tree_card.grid(row=2, column=0, sticky="nsew", pady=(0, 0))
+        tree_card.grid(row=3, column=0, sticky="nsew", pady=(0, 0))
         tree_card.grid_columnconfigure(0, weight=1)
         tree_card.grid_rowconfigure(1, weight=1)
 
@@ -568,7 +752,7 @@ class WinRAApp(ctk.CTk):
 
         # ── Progress bar (bottom of content) ──
         self._progress_frame = ctk.CTkFrame(content, fg_color="transparent", height=30)
-        self._progress_frame.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        self._progress_frame.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         self._progress_frame.grid_columnconfigure(1, weight=1)
 
         self._progress_label = ctk.CTkLabel(
@@ -638,6 +822,8 @@ class WinRAApp(ctk.CTk):
         self._reset_ui()
 
         if tab == "extract":
+            if hasattr(self, '_password_bar'):
+                self._password_bar.grid(row=2, column=0, sticky="new", pady=(0, 10))
             self._mode_title.configure(text="Extract Archive")
             self._action_btn.configure(text="Extract", fg_color=MacColors.BLUE,
                                         hover_color=MacColors.BLUE_HOVER)
@@ -649,6 +835,8 @@ class WinRAApp(ctk.CTk):
             self._build_toolbar_extract()
 
         elif tab == "compress":
+            if hasattr(self, '_password_bar'):
+                self._password_bar.grid_remove()
             self._mode_title.configure(text="Compress Files")
             self._action_btn.configure(text="Create ZIP", fg_color=MacColors.GREEN,
                                         hover_color="#2EA54D")
@@ -660,6 +848,8 @@ class WinRAApp(ctk.CTk):
             self._build_toolbar_compress()
 
         elif tab == "convert":
+            if hasattr(self, '_password_bar'):
+                self._password_bar.grid(row=2, column=0, sticky="new", pady=(0, 10))
             self._mode_title.configure(text="Convert Format")
             self._action_btn.configure(text="Convert", fg_color=MacColors.PURPLE,
                                         hover_color="#9B3DC4")
@@ -670,10 +860,21 @@ class WinRAApp(ctk.CTk):
             self._tree_title.configure(text="Archive Contents")
             self._build_toolbar_convert()
 
+    def _toggle_inline_password(self):
+        self._show_pwd_inline = not getattr(self, "_show_pwd_inline", False)
+        self._password_entry.configure(show="" if self._show_pwd_inline else "*")
+
     def _reset_ui(self):
         """Reset UI state."""
         self._clear_tree()
         self._output_entry.delete(0, "end")
+        if hasattr(self, '_password_entry'):
+            self._password_entry.delete(0, "end")
+            self._password_entry.configure(placeholder_text="Enter archive password (optional)...")
+        self._progress.set(0)
+        self._progress_label.configure(text="Ready")
+        self._file_title.configure(text="No file selected")
+        self._file_subtitle.configure(text="Open an archive or add files to get started")
         self._progress.set(0)
         self._progress_label.configure(text="Ready")
         self._file_title.configure(text="No file selected")
@@ -785,6 +986,15 @@ class WinRAApp(ctk.CTk):
         )
         self._secondary_btn.configure(hover_color=self.C.SIDEBAR_HOVER)
 
+        # Password bar
+        if hasattr(self, '_password_bar'):
+            self._password_bar.configure(fg_color=self.C.CARD_BG, border_color=self.C.CARD_BORDER)
+            self._password_entry.configure(text_color=self.C.TEXT_PRIMARY)
+            self._password_toggle_btn.configure(
+                fg_color=self.C.TAG_BG, hover_color=self.C.SIDEBAR_HOVER,
+                text_color=self.C.TEXT_SECONDARY,
+            )
+
         # Tree card
         self._tree_card.configure(fg_color=self.C.CARD_BG, border_color=self.C.CARD_BORDER)
         self._tree_frame.configure(fg_color=self.C.CARD_BG)
@@ -887,6 +1097,10 @@ class WinRAApp(ctk.CTk):
         self._clear_tags()
         self._add_tag(ext.lstrip(".").upper(), MacColors.BLUE)
         self._add_tag(f"{info['total_files']} files", MacColors.INDIGO)
+        if info.get("is_encrypted"):
+            self._add_tag("\U0001F512 Encrypted", MacColors.ORANGE)
+            if hasattr(self, '_password_entry'):
+                self._password_entry.configure(placeholder_text="Archive is password-protected...")
 
         # Populate tree
         self._populate_tree(info.get("files", []))
@@ -1037,7 +1251,7 @@ class WinRAApp(ctk.CTk):
 
     # ─── Execute ─────────────────────────────────────────────────────
 
-    def _execute_action(self):
+    def _execute_action(self, password_override=None):
         if self._is_processing:
             return
         if not self._selected_files:
@@ -1048,6 +1262,8 @@ class WinRAApp(ctk.CTk):
             messagebox.showwarning("WinRA", "Please set an output location.")
             return
 
+        password = password_override or (self._password_entry.get().strip() if hasattr(self, '_password_entry') else None) or None
+
         self._is_processing = True
         self._action_btn.configure(state="disabled")
         self._progress.set(0)
@@ -1055,21 +1271,21 @@ class WinRAApp(ctk.CTk):
 
         thread = threading.Thread(
             target=self._run_operation,
-            args=(self._current_tab, list(self._selected_files), output),
+            args=(self._current_tab, list(self._selected_files), output, password),
             daemon=True,
         )
         thread.start()
 
-    def _run_operation(self, mode, files, output):
+    def _run_operation(self, mode, files, output, password=None):
         try:
             if mode == "extract":
                 src = files[0]
                 ensure_dir(output)
                 ext = os.path.splitext(src)[1].lower()
                 if ext == ".zip":
-                    result = extract_zip(src, output, self._update_progress)
+                    result = extract_zip(src, output, password=password, progress_cb=self._update_progress)
                 elif ext == ".rar":
-                    result = extract_rar(src, output, self._update_progress)
+                    result = extract_rar(src, output, password=password, progress_cb=self._update_progress)
                 else:
                     raise ValueError(f"Unsupported: {ext}")
                 self.after(0, lambda: self._on_complete(
@@ -1084,17 +1300,45 @@ class WinRAApp(ctk.CTk):
                 src = files[0]
                 ext = os.path.splitext(src)[1].lower()
                 if ext == ".rar":
-                    result = convert_rar_to_zip(src, output, self._update_progress)
+                    result = convert_rar_to_zip(src, output, password=password, progress_cb=self._update_progress)
                 elif ext == ".zip":
-                    result = convert_zip_to_rar(src, output, self._update_progress)
+                    result = convert_zip_to_rar(src, output, password=password, progress_cb=self._update_progress)
                 else:
                     raise ValueError(f"Cannot convert: {ext}")
                 sz = format_size(os.path.getsize(result))
                 self.after(0, lambda: self._on_complete(f"Converted to:\n{result}\n({sz})"))
 
+        except PasswordRequiredError as e:
+            err_msg = str(e)
+            self.after(0, lambda: self._prompt_password_and_retry(err_msg))
+
         except Exception as e:
             err_msg = str(e)
             self.after(0, lambda: self._on_error(err_msg))
+
+    def _prompt_password_and_retry(self, reason=""):
+        self._is_processing = False
+        self._progress.set(0)
+        self._progress_label.configure(text="Password required", text_color=MacColors.ORANGE)
+
+        labels = {"extract": "Extract", "compress": "Create ZIP", "convert": "Convert"}
+        colors = {"extract": MacColors.BLUE, "compress": MacColors.GREEN, "convert": MacColors.PURPLE}
+        self._action_btn.configure(state="normal", text=labels.get(self._current_tab, "Go"),
+                                    fg_color=colors.get(self._current_tab, MacColors.BLUE))
+
+        dialog = PasswordDialog(
+            self,
+            title="Password Required",
+            message=reason or "This archive is password-protected.\nPlease enter the password to extract:",
+        )
+        pwd = dialog.get_password()
+        if pwd:
+            if hasattr(self, '_password_entry'):
+                self._password_entry.delete(0, "end")
+                self._password_entry.insert(0, pwd)
+            self._execute_action(password_override=pwd)
+        else:
+            self._progress_label.configure(text="Ready", text_color=self.C.TEXT_TERTIARY)
 
     def _update_progress(self, current, total, filename):
         pct = current / total if total > 0 else 0
