@@ -253,14 +253,27 @@ def format_size(size_bytes: int) -> str:
 
 
 def _find_tool(name: str) -> str | None:
-    """Find a command-line tool in PATH or common locations."""
+    """Find a command-line tool in PATH, bundled bin, or common locations."""
+    # Check bundled tool inside app bundle or project bin/
+    try:
+        from app.utils import resource_path
+        bundled = resource_path(os.path.join("bin", name))
+        if os.path.isfile(bundled) and os.access(bundled, os.X_OK):
+            return bundled
+    except Exception:
+        pass
+
+    local_bin = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "bin", name)
+    if os.path.isfile(local_bin) and os.access(local_bin, os.X_OK):
+        return local_bin
+
     result = shutil.which(name)
     if result:
         return result
 
     common_paths = [
-        f"/opt/homebrew/bin/{name}",
         f"/usr/local/bin/{name}",
+        f"/opt/homebrew/bin/{name}",
         f"/usr/bin/{name}",
     ]
     for p in common_paths:

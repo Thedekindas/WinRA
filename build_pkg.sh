@@ -48,19 +48,21 @@ pkgbuild \
 
 echo "3/4 - Creating product installer..."
 # Build the final product package with welcome/license/conclusion
+OUTPUT_PKG="${PKG_NAME:-${APP_NAME}.pkg}"
 productbuild \
     --distribution "$INSTALLER_DIR/distribution.xml" \
     --resources "$RESOURCES_DIR" \
     --package-path "$PKG_BUILD_DIR" \
-    "${APP_NAME}.pkg"
+    "$OUTPUT_PKG"
 
 echo "4/4 - Cleaning up..."
 rm -rf "$PKG_BUILD_DIR"
 
 echo ""
 echo "=== PKG Build Complete ==="
-PKG_SIZE=$(du -h "${APP_NAME}.pkg" | cut -f1)
-echo "  Installer: ${APP_NAME}.pkg (${PKG_SIZE})"
+PKG_SIZE=$(du -h "$OUTPUT_PKG" | cut -f1)
+echo "  Installer: $OUTPUT_PKG (${PKG_SIZE})"
+
 echo ""
 echo "Untuk install: open ${APP_NAME}.pkg"
 echo "Atau double-click file ${APP_NAME}.pkg di Finder"
